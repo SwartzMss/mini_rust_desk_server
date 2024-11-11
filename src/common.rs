@@ -1,10 +1,7 @@
 use std::{
-    collections::HashMap,
-    future::Future,
-    sync::{Arc, Mutex, RwLock},
-    task::Poll,
+    collections::HashMap, future::Future, os::windows::process, sync::{Arc, Mutex, RwLock}, task::Poll
 };
-
+use ini::Ini;
 use serde_json::Value;
 
 use mini_rust_desk_common::{
@@ -42,8 +39,6 @@ pub type NotifyMessageBox = fn(String, String, String, String) -> dyn Future<Out
 pub const TIMER_OUT: Duration = Duration::from_secs(1);
 pub const DEFAULT_KEEP_ALIVE: i32 = 60_000;
 
-const MIN_VER_MULTI_UI_SESSION: &str = "1.2.4";
-
 lazy_static::lazy_static! {
     pub static ref DEVICE_ID: Arc<Mutex<String>> = Default::default();
     pub static ref DEVICE_NAME: Arc<Mutex<String>> = Default::default();
@@ -61,26 +56,35 @@ impl Drop for SimpleCallOnReturn {
         }
     }
 }
+#[allow(dead_code)]
+#[inline]
+pub fn get_arg(name: &str) -> String {
+    get_arg_or(name, "".to_owned())
+}
 
-pub fn test_nat_type() {
-    let mut i = 0;
-    std::thread::spawn(move || loop {
-        match test_nat_type_() {
-            Ok(true) => break,
-            Err(err) => {
-                log::error!("test nat: {}", err);
-            }
-            _ => {}
+#[allow(dead_code)]
+#[inline]
+pub fn get_arg_or(name: &str, default: String) -> String {
+    std::env::var(name).unwrap_or(default)
+}
+
+
+pub fn parse_and_init_params() {
+    if let Ok(v) = Ini::load_from_file(".env") {
+        log::info!(".env has been found");
+        if let Some(section) = v.section(None::<String>) {
+            section
+                .iter()
+                .for_each(|(k, v)|{
+                    log::info!("Config loaded: {} = {}", k, v);
+                    std::env::set_var(k, v);}
+                );
         }
-        if Config::get_nat_type() != 0 {
-            break;
-        }
-        i = i * 2 + 1;
-        if i > 300 {
-            i = 300;
-        }
-        std::thread::sleep(std::time::Duration::from_secs(i));
-    });
+    }
+    else {
+        log::info!("cannot find .env file");
+        std::process::exit(-1);
+    }
 }
 
 #[inline]
@@ -111,68 +115,6 @@ pub async fn get_next_nonkeyexchange_msg(
     None
 }
 
-#[tokio::main(flavor = "current_thread")]
-async fn test_nat_type_() -> ResultType<bool> {
-    log::info!("Testing nat ...");
-    let start = std::time::Instant::now();
-    let (rendezvous_server, _, _) = get_rendezvous_server(1_000).await;
-    let server1 = rendezvous_server;
-    let server2 = increase_port(&server1, -1);
-    let mut msg_out = RendezvousMessage::new();
-    let serial = Config::get_serial();
-    msg_out.set_test_nat_request(TestNatRequest {
-        serial,
-        ..Default::default()
-    });
-    let mut port1 = 0;
-    let mut port2 = 0;
-    let mut local_addr = None;
-    for i in 0..2 {
-        let server = if i == 0 { &*server1 } else { &*server2 };
-        let mut socket =
-            socket_client::connect_tcp_local(server, local_addr, CONNECT_TIMEOUT).await?;
-        if i == 0 {
-            // reuse the local addr is required for nat test
-            local_addr = Some(socket.local_addr());
-            Config::set_option(
-                "local-ip-addr".to_owned(),
-                socket.local_addr().ip().to_string(),
-            );
-        }
-        socket.send(&msg_out).await?;
-        if let Some(msg_in) = get_next_nonkeyexchange_msg(&mut socket, None).await {
-            if let Some(rendezvous_message::Union::TestNatResponse(tnr)) = msg_in.union {
-                log::debug!("Got nat response from {}: port={}", server, tnr.port);
-                if i == 0 {
-                    port1 = tnr.port;
-                } else {
-                    port2 = tnr.port;
-                }
-                if let Some(cu) = tnr.cu.as_ref() {
-                    Config::set_option(
-                        "rendezvous-servers".to_owned(),
-                        cu.rendezvous_servers.join(","),
-                    );
-                    Config::set_serial(cu.serial);
-                }
-            }
-        } else {
-            break;
-        }
-    }
-    let ok = port1 > 0 && port2 > 0;
-    if ok {
-        let t = if port1 == port2 {
-            NatType::ASYMMETRIC
-        } else {
-            NatType::SYMMETRIC
-        };
-        Config::set_nat_type(t as _);
-        log::info!("Tested nat type: {:?} in {:?}", t, start.elapsed());
-    }
-    Ok(ok)
-}
-
 pub async fn get_rendezvous_server(ms_timeout: u64) -> (String, Vec<String>, bool) {
     let (mut a, mut b) = get_rendezvous_server_(ms_timeout).await;
     let mut b: Vec<String> = b
@@ -194,13 +136,6 @@ pub async fn get_rendezvous_server(ms_timeout: u64) -> (String, Vec<String>, boo
 async fn get_rendezvous_server_(ms_timeout: u64) -> (String, Vec<String>) {
     crate::ipc::get_rendezvous_server(ms_timeout).await
 }
-
-#[inline]
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-pub async fn get_nat_type(ms_timeout: u64) -> i32 {
-    crate::ipc::get_nat_type(ms_timeout).await
-}
-
 
 #[inline]
 pub fn username() -> String {

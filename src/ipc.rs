@@ -2,6 +2,7 @@ use bytes::Bytes;
 use parity_tokio_ipc::{
     Connection as Conn, ConnectionClient as ConnClient, Endpoint, Incoming, SecurityAttributes,
 };
+
 use serde_derive::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
@@ -114,10 +115,11 @@ pub async fn start(postfix: &str) -> ResultType<()> {
                         loop {
                             match stream.next().await {
                                 Err(err) => {
-                                    log::trace!("ipc '{}' connection closed: {}", postfix, err);
+                                    log::info!("ipc '{}' connection closed: {}", postfix, err);
                                     break;
                                 }
                                 Ok(Some(data)) => {
+                                    log::info!("ipc_{}, data: {:?}", postfix, data);
                                     handle(data, &mut stream).await;
                                 }
                                 _ => {}
@@ -232,10 +234,6 @@ async fn handle(data: Data, stream: &mut Connection) {
                 allow_err!(stream.send(&Data::Options(None)).await);
             }
         },
-        Data::NatType(_) => {
-            let t = Config::get_nat_type();
-            allow_err!(stream.send(&Data::NatType(Some(t))).await);
-        }
         Data::SyncConfig(None) => {
             allow_err!(
                 stream
@@ -364,29 +362,6 @@ pub async fn set_config(name: &str, value: String) -> ResultType<()> {
     set_config_async(name, value).await
 }
 
-pub fn update_temporary_password() -> ResultType<()> {
-    set_config("temporary-password", "".to_owned())
-}
-
-pub fn get_permanent_password() -> String {
-    if let Ok(Some(v)) = get_config("permanent-password") {
-        Config::set_permanent_password(&v);
-        v
-    } else {
-        Config::get_permanent_password()
-    }
-}
-
-pub fn get_fingerprint() -> String {
-    get_config("fingerprint")
-        .unwrap_or_default()
-        .unwrap_or_default()
-}
-
-pub fn set_permanent_password(v: String) -> ResultType<()> {
-    Config::set_permanent_password(&v);
-    set_config("permanent-password", v)
-}
 
 pub fn get_id() -> String {
     if let Ok(Some(v)) = get_config("id") {
@@ -465,24 +440,6 @@ pub async fn set_options(value: HashMap<String, String>) -> ResultType<()> {
     }
     Config::set_options(value);
     Ok(())
-}
-
-#[inline]
-async fn get_nat_type_(ms_timeout: u64) -> ResultType<i32> {
-    let mut c = connect(ms_timeout, "").await?;
-    c.send(&Data::NatType(None)).await?;
-    if let Some(Data::NatType(Some(value))) = c.next_timeout(ms_timeout).await? {
-        Config::set_nat_type(value);
-        Ok(value)
-    } else {
-        Ok(Config::get_nat_type())
-    }
-}
-
-pub async fn get_nat_type(ms_timeout: u64) -> i32 {
-    get_nat_type_(ms_timeout)
-        .await
-        .unwrap_or(Config::get_nat_type())
 }
 
 pub async fn get_rendezvous_servers(ms_timeout: u64) -> Vec<String> {

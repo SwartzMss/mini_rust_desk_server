@@ -29,3 +29,4 @@ dirs-next = "2.0"
 directories-next = "2.0"
 mac_address = "1.1"
 parity-tokio-ipc = { git = "https://github.com/rustdesk-org/parity-tokio-ipc" }
+rust-ini = "0.18"

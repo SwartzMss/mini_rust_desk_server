@@ -43,19 +43,11 @@ pub struct RendezvousMediator {
 
 impl RendezvousMediator {
     pub async fn start_all() {
-        let mut nat_tested = false;
-        if Config::get_nat_type() == NatType::UNKNOWN_NAT as i32 {
-            crate::test_nat_type();
-            nat_tested = true;
-        }
         loop {
             *SOLVING_PK_MISMATCH.lock().await = "".to_owned();                
-            if !nat_tested {
-                crate::test_nat_type();
-                nat_tested = true;
-            }
             let mut futs = Vec::new();
             let servers = Config::get_rendezvous_servers();
+            log::info!("rendezvous servers {:?}", servers);
             for host in servers.clone() {
                 futs.push(tokio::spawn(async move {
                     if let Err(err) = Self::start(host).await {
@@ -193,13 +185,14 @@ impl RendezvousMediator {
         match msg {
             Some(rendezvous_message::Union::RegisterPeerResponse(rpr)) => {
                 update_latency();
+                log::info!("RegisterPeerResponse received from {} request_pk = {}", self.host, rpr.request_pk);
                 if rpr.request_pk {
-                    log::info!("request_pk received from {}", self.host);
                     self.register_pk(sink).await?;
                 }
             }
             Some(rendezvous_message::Union::RegisterPkResponse(rpr)) => {
                 update_latency();
+                log::info!("RegisterPkResponse received from {} rpr.result = {:?}", self.host, rpr.result);
                 match rpr.result.enum_value() {
                     Ok(register_pk_response::Result::OK) => {
                         Config::set_key_confirmed(true);
@@ -218,13 +211,8 @@ impl RendezvousMediator {
                     log::info!("keep_alive: {}ms", self.keep_alive);
                 }
             }
-            Some(rendezvous_message::Union::ConfigureUpdate(cu)) => {
-                let v0 = Config::get_rendezvous_servers();
-                Config::set_option(
-                    "rendezvous-servers".to_owned(),
-                    cu.rendezvous_servers.join(","),
-                );
-                Config::set_serial(cu.serial);
+            Some(rendezvous_message::Union::FetchLocalAddr(fla)) => {
+                log::info!("FetchLocalAddr received from {} fla = {:?}", self.host, fla);
             }
             _ => {}
         }
@@ -248,6 +236,7 @@ impl RendezvousMediator {
             pk: pk.into(),
             ..Default::default()
         });
+        log::info!("RegisterPk sent out");
         socket.send(&msg_out).await?;
         Ok(())
     }
@@ -281,7 +270,7 @@ impl RendezvousMediator {
             return self.register_pk(socket).await;
         }
         let id = Config::get_id();
-        log::trace!(
+        log::info!(
             "Register my id {:?} to rendezvous server {:?}",
             id,
             self.addr,
@@ -294,6 +283,7 @@ impl RendezvousMediator {
             ..Default::default()
         });
         socket.send(&msg_out).await?;
+        log::info!("RegisterPeer sent out");
         Ok(())
     }
 
