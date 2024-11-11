@@ -9,10 +9,10 @@ fn main() -> ResultType<()> {
         .write_mode(WriteMode::Async)
         .start()?;
     parse_and_init_params();
-    log::info!("id={}", mini_rust_desk_common::config::Config::get_id());
-    log::info!("rendezvous-server={}", get_arg("rendezvous-server"));
+    let rendezvous_server = get_arg("rendezvous-server");
+    log::info!("rendezvous-server={}", &rendezvous_server);
     log::info!("relay-server={}", get_arg("relay-server"));
     log::info!("key={}", get_arg("key"));
-    crate::start_server();
+    crate::start_server(rendezvous_server);
     Ok(())
 }

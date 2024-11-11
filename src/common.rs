@@ -1,29 +1,10 @@
 use std::{
-    collections::HashMap, future::Future, os::windows::process, sync::{Arc, Mutex, RwLock}, task::Poll
+     future::Future, sync::{Arc, Mutex}, task::Poll
 };
 use ini::Ini;
-use serde_json::Value;
 
 use mini_rust_desk_common::{
-    allow_err,
-    anyhow::{anyhow, Context},
-    bail, base64,
-    bytes::Bytes,
-    config::{self, Config, CONNECT_TIMEOUT, READ_TIMEOUT, RENDEZVOUS_PORT},
-    futures_util::future::poll_fn,
-    get_version_number, log,
-    message_proto::*,
-    protobuf::{Enum, Message as _},
-    rendezvous_proto::*,
-    socket_client,
-    sodiumoxide::crypto::{box_, secretbox, sign},
-    tcp::FramedStream,
-    timeout,
-    tokio::{
-        self,
-        time::{Duration, Instant, Interval},
-    },
-    ResultType,
+    anyhow::anyhow, bail, base64, bytes::Bytes, config:: READ_TIMEOUT, futures_util::future::poll_fn, log, message_proto::*, protobuf::Message as _, rendezvous_proto::*, sodiumoxide::crypto::{box_, secretbox, sign}, tcp::FramedStream, tokio::time::{Duration, Instant, Interval}, ResultType
 };
 
 #[derive(Debug, Eq, PartialEq)]
@@ -68,6 +49,33 @@ pub fn get_arg_or(name: &str, default: String) -> String {
     std::env::var(name).unwrap_or(default)
 }
 
+fn generate_id() -> Option<String> {
+    let mut id = 0u32;
+    if let Ok(Some(ma)) = mac_address::get_mac_address() {
+        for x in &ma.bytes()[2..] {
+            id = (id << 8) | (*x as u32);
+        }
+        id &= 0x1FFFFFFF;
+        Some(id.to_string())
+    } else {
+        None
+    }
+}
+type KeyPair = (Vec<u8>, Vec<u8>);
+lazy_static::lazy_static! {
+    static ref KEY_PAIR: Mutex<Option<KeyPair>> = Default::default();
+}
+pub fn get_key_pair() -> KeyPair {
+    let mut lock = KEY_PAIR.lock().unwrap();
+    if let Some(p) = lock.as_ref() {
+        return p.clone();
+    }
+    log::info!("Generated new keypair");
+    let (pk, sk) = sign::gen_keypair();
+    let key_pair = (sk.0.to_vec(), pk.0.into());
+    *lock = Some(key_pair.clone());
+    key_pair
+}
 
 pub fn parse_and_init_params() {
     if let Ok(v) = Ini::load_from_file(".env") {
@@ -76,20 +84,24 @@ pub fn parse_and_init_params() {
             section
                 .iter()
                 .for_each(|(k, v)|{
-                    log::info!("Config loaded: {} = {}", k, v);
                     std::env::set_var(k, v);}
                 );
         }
     }
     else {
         log::info!("cannot find .env file");
+        std::thread::sleep(std::time::Duration::from_secs(1)); 
         std::process::exit(-1);
     }
-}
 
-#[inline]
-pub fn increase_port<T: std::string::ToString>(host: T, offset: i32) -> String {
-    mini_rust_desk_common::socket_client::increase_port(host, offset)
+    if let Some(tmp) = generate_id() {
+        std::env::set_var("id", tmp);
+    }
+    else {
+        log::info!("generate_id failed");
+        std::thread::sleep(std::time::Duration::from_secs(1)); 
+        std::process::exit(-1);
+    }
 }
 
 pub async fn get_next_nonkeyexchange_msg(
@@ -115,58 +127,15 @@ pub async fn get_next_nonkeyexchange_msg(
     None
 }
 
-pub async fn get_rendezvous_server(ms_timeout: u64) -> (String, Vec<String>, bool) {
-    let (mut a, mut b) = get_rendezvous_server_(ms_timeout).await;
-    let mut b: Vec<String> = b
-        .drain(..)
-        .map(|x| socket_client::check_port(x, config::RENDEZVOUS_PORT))
-        .collect();
-    let c = if b.contains(&a) {
-        b = b.drain(..).filter(|x| x != &a).collect();
-        true
-    } else {
-        a = b.pop().unwrap_or(a);
-        false
-    };
-    (a, b, c)
-}
-
-#[inline]
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-async fn get_rendezvous_server_(ms_timeout: u64) -> (String, Vec<String>) {
-    crate::ipc::get_rendezvous_server(ms_timeout).await
-}
-
 #[inline]
 pub fn username() -> String {
     return whoami::username().trim_end_matches('\0').to_owned();
 }
 
-#[inline]
-pub fn hostname() -> String {
-    {
-        #[allow(unused_mut)]
-        let mut name = whoami::hostname();
-        name
-    }
-}
 
 #[inline]
 pub fn check_port<T: std::string::ToString>(host: T, port: i32) -> String {
     mini_rust_desk_common::socket_client::check_port(host, port)
-}
-
-#[inline]
-pub fn get_app_name() -> String {
-    mini_rust_desk_common::config::APP_NAME
-        .read()
-        .unwrap()
-        .clone()
-}
-
-#[inline]
-pub fn get_uri_prefix() -> String {
-    format!("{}://", get_app_name().to_lowercase())
 }
 
 pub fn encode64<T: AsRef<[u8]>>(input: T) -> String {
@@ -177,19 +146,6 @@ pub fn encode64<T: AsRef<[u8]>>(input: T) -> String {
 pub fn decode64<T: AsRef<[u8]>>(input: T) -> Result<Vec<u8>, base64::DecodeError> {
     #[allow(deprecated)]
     base64::decode(input)
-}
-
-pub async fn get_key(sync: bool) -> String {
-    let mut key = if sync {
-        Config::get_option("key")
-    } else {
-        let mut options = crate::ipc::get_options_async().await;
-        options.remove("key").unwrap_or_default()
-    };
-    if key.is_empty() {
-        key = config::RS_PUB_KEY.to_owned();
-    }
-    key
 }
 
 fn get_pk(pk: &[u8]) -> Option<[u8; 32]> {
