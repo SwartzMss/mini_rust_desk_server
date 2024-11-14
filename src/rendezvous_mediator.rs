@@ -1,20 +1,21 @@
 use std::time::Instant;
-
+use uuid::Uuid;
 
 use mini_rust_desk_common::{
     anyhow::bail,
-    config::{Config, CONNECT_TIMEOUT, REG_INTERVAL, RENDEZVOUS_PORT},
+    allow_err,
+    config::{CONNECT_TIMEOUT, REG_INTERVAL, RENDEZVOUS_PORT},
     log,
     protobuf::Message as _,
     rendezvous_proto::*,
     sleep,
-    socket_client,
+    socket_client::{self,connect_tcp,is_ipv4},
     tcp::FramedStream,
     tokio::{select, time::interval},
     udp::FramedSocket,
     ResultType, TargetAddr,
+    AddrMangle,
 };
-
 
 type Message = RendezvousMessage;
 
@@ -23,7 +24,6 @@ type Message = RendezvousMessage;
 pub struct RendezvousMediator {
     addr: TargetAddr<'static>,
     host: String,
-    host_prefix: String,
     keep_alive: i32,
 }
 
@@ -37,26 +37,12 @@ impl RendezvousMediator {
         }
     }
 
-    fn get_host_prefix(host: &str) -> String {
-        host.split(".")
-            .next()
-            .map(|x| {
-                if x.parse::<i32>().is_ok() {
-                    host.to_owned()
-                } else {
-                    x.to_owned()
-                }
-            })
-            .unwrap_or(host.to_owned())
-    }
-
     pub async fn start_udp(host: String) -> ResultType<()> {
         let host = crate::check_port(&host, RENDEZVOUS_PORT);
         let (mut socket, mut addr) = socket_client::new_udp_for(&host, CONNECT_TIMEOUT).await?;
         let mut rz = Self {
             addr: addr.clone(),
             host: host.clone(),
-            host_prefix: Self::get_host_prefix(&host),
             keep_alive: crate::DEFAULT_KEEP_ALIVE,
         };
 
@@ -182,11 +168,64 @@ impl RendezvousMediator {
                     log::info!("keep_alive: {}ms", self.keep_alive);
                 }
             }
-            Some(rendezvous_message::Union::FetchLocalAddr(fla)) => {
-                log::info!("FetchLocalAddr received from {} fla = {:?}", self.host, fla);
+            Some(rendezvous_message::Union::PunchHole(rpr)) => {
+                log::info!("PunchHole received from {} rpr = {:?}", self.host, rpr);
+                let rz = self.clone();
+                tokio::spawn(async move {
+                    allow_err!(rz.handle_punch_hole(rpr).await);
+                });
             }
-            _ => {}
+            _ => {log::info!("handle_resp Unexpected protobuf msg received: {:?}", msg);}
         }
+        Ok(())
+    }
+
+    async fn handle_punch_hole(&self, ph: PunchHole) -> ResultType<()> {
+        let relay_server = crate::common::get_arg("relay-server");
+        let uuid = Uuid::new_v4().to_string();
+        return self
+            .create_relay(
+                ph.socket_addr.into(),
+                relay_server,
+                uuid,
+            )
+            .await;
+    }
+
+    async fn create_relay(
+        &self,
+        socket_addr: Vec<u8>,
+        relay_server: String,
+        uuid: String,
+    ) -> ResultType<()> {
+        let peer_addr = AddrMangle::decode(&socket_addr);
+        log::info!(
+            "create_relay requested from {:?}, relay_server: {}, uuid: {}",
+            peer_addr,
+            relay_server,
+            uuid,
+        );
+
+        let mut socket = connect_tcp(&*self.host, CONNECT_TIMEOUT).await?;
+
+        let mut msg_out = Message::new();
+        let mut rr = RelayResponse {
+            socket_addr: socket_addr.into(),
+            ..Default::default()
+        };
+
+        rr.uuid = uuid.clone();
+        rr.relay_server = relay_server.clone();
+        rr.set_id(crate::common::get_arg("id"));
+        msg_out.set_relay_response(rr);
+        socket.send(&msg_out).await?;
+        crate::server::create_relay_connection(
+            relay_server,
+            uuid,
+            peer_addr,
+            is_ipv4(&self.addr),
+        )
+        .await;
         Ok(())
     }
 
