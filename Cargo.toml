@@ -31,3 +31,29 @@ directories-next = "2.0"
 mac_address = "1.1"
 parity-tokio-ipc = { git = "https://github.com/rustdesk-org/parity-tokio-ipc" }
 rust-ini = "0.18"
+sha2 = "0.10"
+shared_memory = "0.12"
+winres = "0.1"
+winapi = { version = "0.3", features = [
+    "winuser",
+    "wincrypt",
+    "shellscalingapi",
+    "pdh",
+    "synchapi",
+    "memoryapi",
+    "shellapi",
+    "devguid",
+    "setupapi",
+    "cguid",
+    "cfgmgr32",
+    "ioapiset",
+] }
+winreg = "0.11"
+windows-service = "0.6"
+arboard = { git = "https://github.com/rustdesk-org/arboard", features = ["wayland-data-control"] }
+wallpaper = { git = "https://github.com/rustdesk-org/wallpaper.rs" }
+runas = "1.2"
+
+
+[build-dependencies]
+cc = "1.0"
